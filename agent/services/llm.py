@@ -1,10 +1,3 @@
-"""OpenAI-compatible chat-completions wrapper.
-
-Works with any provider that speaks the OpenAI API (OpenAI, Azure OpenAI,
-Groq, Together, local Ollama, etc.) — only `LLM_BASE_URL`, `LLM_MODEL_NAME`,
-and `LLM_API_KEY` change between providers.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -18,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMResponse:
-    message: Any                # raw choices[0].message object (has .content, .tool_calls)
+    message: Any
     finish_reason: str | None
     prompt_tokens: int
     completion_tokens: int
@@ -26,8 +19,6 @@ class LLMResponse:
 
 
 def _get_client():
-    """Build (and cache on the module) an OpenAI client pointed at the
-    configured base URL."""
     global _client
     try:
         return _client
@@ -46,11 +37,6 @@ def chat(
     tool_choice: str | dict | None = None,
     temperature: float = 0.2,
 ) -> LLMResponse:
-    """One round-trip to the LLM. Returns the assistant message + token usage.
-
-    Caller is responsible for appending the message to its `messages` list and
-    dispatching any tool calls.
-    """
     client = _get_client()
     kwargs: dict = {
         "model": settings.LLM_MODEL_NAME,

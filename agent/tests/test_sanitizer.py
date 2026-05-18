@@ -1,5 +1,3 @@
-"""Unit tests for repository URL sanitization (pipeline step 1)."""
-
 from __future__ import annotations
 
 import pytest

@@ -1,0 +1,96 @@
+
+Sample Request:
+{
+    "repository_url": "https://github.com/HqShiblu/tech-pricing-scraper",
+    "question": "Name the websites that it is scraping"
+}
+
+Sample Response:
+{
+	"session_id": "af3f6fb6-9b8e-410b-873b-9d3dc2f45032",
+	"repository_url": "https://github.com/HqShiblu/tech-pricing-scraper",
+	"question": "Name the websites that it is scraping",
+	"answer": "The scraper is targeting the following 11 websites:\n\n1. **Star Tech** – `https://www.startech.com.bd/`  \n   (Function: `scrapeStartech`, source: `\"star_tech\"`)[[server.js:27-75]]\n\n2. **Techland** – `https://www.techlandbd.com/`  \n   (Function: `scrapeTechland`, source: `\"tech_land\"`)[[server.js:77-121]]\n\n3. **Ryans** – `https://www.ryans.com/`  \n   (Function: `scrapeRyans`, source: `\"ryans\"`)[[server.js:123-164]]\n\n4. **Computer Village** – `https://www.computervillage.com.bd/`  \n   (Function: `scrapeComputerVillage`, source: `\"village\"`)[[server.js:166-210]]\n\n5. **Smartbd** – `https://smartbd.com/`  \n   (Function: `scrapeSmartTech`, source: `\"smartbd\"`)[[server.js:212-252]]\n\n6. **Computer Mania** – `https://computermania.com.bd/`  \n   (Function: `scrapeCompterMania`, source: `\"computer_mania\"`)[[server.js:254-298]]\n\n7. **PC House** – `https://www.pchouse.com.bd/`  \n   (Function: `scrapePCHouse`, source: `\"pc_house\"`)[[server.js:300-340]]\n\n8. **Pickaboo** – `https://www.pickaboo.com/`  \n   (Function: `scrapePickaboo`, source: `\"pickaboo\"`)[[server.js:342-381]]\n\n9. **Gadstyle** – `https://www.gadstyle.com/`  \n   (Function: `scrapeGadStyle`, source: `\"gadstyle\"`)[[server.js:383-423]]\n\n10. **Gadget and Gear** – `https://gadgetandgear.com/`  \n    (Function: `scrapeGadgetAndGear`, source: `\"gadget_and_gear\"`)[[server.js:425-460]]\n\n11. **TV Hut** – `https://www.tvhut.com.bd/`  \n    (Function: `scrapeTVHut`, source: `\"tvhut\"`)[[server.js:462-512]]\n\nEach website is scraped by a dedicated async function in `server.js` that fetches search results, parses the HTML/JSON response, extracts product details (title, price, image, etc.), and emits them via a Socket.IO event. The `source` field in the scraped data identifies the originating site. [[server.js:27-512]]",
+	"source": "cache",
+	"references": [
+		{
+			"file_path": "server.js",
+			"line_start": 27,
+			"line_end": 75,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 77,
+			"line_end": 121,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 123,
+			"line_end": 164,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 166,
+			"line_end": 210,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 212,
+			"line_end": 252,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 254,
+			"line_end": 298,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 300,
+			"line_end": 340,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 342,
+			"line_end": 381,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 383,
+			"line_end": 423,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 425,
+			"line_end": 460,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 462,
+			"line_end": 512,
+			"note": null
+		},
+		{
+			"file_path": "server.js",
+			"line_start": 27,
+			"line_end": 512,
+			"note": null
+		}
+	],
+	"token_usage": {
+		"prompt_tokens": 0,
+		"completion_tokens": 0,
+		"total_tokens": 0
+	},
+	"created_at": "2026-05-18T16:05:06.208955+00:00",
+	"completed_at": "2026-05-18T16:05:06.230716+00:00"
+}

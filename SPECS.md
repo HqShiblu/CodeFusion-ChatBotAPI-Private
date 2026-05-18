@@ -28,31 +28,40 @@ so it can be retrieved, reviewed, and built upon in future sessions.
 All credentials must be read from `.env`. Never hardcode secrets. Ship a `.env.example`
 with all keys present but no real values.
 
+`AGENT_MAX_LOOP` and `AGENT_MAX_FILE_READS` fall back in `settings.py` to **30** and **15**
+when unset; values in `.env` override those defaults.
+
 ```env
 # Database
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=github_analyzer
-DB_USER=postgres
-DB_PASSWORD=yourpassword
+DB_HOST=
+DB_PORT=
+DB_NAME=
+DB_USER=
+DB_PASSWORD=
 
 # LLM (OpenAI-compatible, must support tool/function calling)
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL_NAME=gpt-4o
-LLM_API_KEY=sk-...
+LLM_BASE_URL=
+LLM_MODEL_NAME=
+LLM_API_KEY=
 
 # Embeddings (local model via sentence-transformers)
 EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
 
 # GitHub (optional but strongly recommended to avoid rate limits)
-GITHUB_TOKEN=ghp_...
+GITHUB_TOKEN=
 
-# Agent loop — hard stop after this many tool calls
+# Agent loop — hard stop after this many tool calls (default 30 if omitted)
 AGENT_MAX_LOOP=30
+# Distinct files incurring a body/raw fetch per session — read_file / read_method (default 15 if omitted)
+AGENT_MAX_FILE_READS=15
+
+# Semantic cache cosine-similarity threshold (override only if tuning)
+SEMANTIC_CACHE_THRESHOLD=0.92
 
 # App
 DEBUG=True
-SECRET_KEY=your-django-secret-key
+SECRET_KEY=
+ALLOWED_HOSTS=*
 ```
 
 ---
@@ -91,9 +100,13 @@ Start a new research session.
     "completion_tokens": 410,
     "total_tokens": 3610
   },
-  "created_at": "2024-01-01T12:00:00Z"
+  "created_at": "2024-01-01T12:00:00Z",
+  "completed_at": "2024-01-01T12:01:05Z"
 }
 ```
+
+On upstream LLM or GitHub failures, errors are returned as a minimal JSON body
+(for example `{ "status": "504", "error": "An error occurred" }`) without leaking provider payloads.
 
 ### 2. `GET /api/sessions/{session_id}/`
 Retrieve a specific session with its full tool call log and findings.
@@ -126,7 +139,7 @@ created_at       DateTimeField, auto
 id               UUID, primary key
 repository       ForeignKey → Repository
 question         TextField
-question_embedding  VectorField(1536)       # pgvector, for semantic cache
+question_embedding  VectorField(384)        # pgvector — must match EMBEDDING_MODEL_NAME (MiniLM is 384-d)
 answer           TextField, nullable        # NULL until agent completes
 source           CharField                  # cache | llm_knowledge | readme_scan | full_traversal
 token_usage      JSONField, nullable        # { prompt_tokens, completion_tokens, total_tokens }
@@ -135,8 +148,12 @@ completed_at     DateTimeField, nullable
 ```
 
 ### Model: `Finding`
-Agent-written notes on what it discovered during a session.
-The agent calls `save_finding(session_id, file_path, note, line_start, line_end)` as a tool.
+Agent-written notes on what it discovered during a session. The LLM calls the
+`save_finding` **tool** with `file_path`, `note`, and optional `line_start` / `line_end`;
+the server binds rows to the **current** `ResearchSession` (no `session_id` in the tool
+schema). A single session may accumulate **many** `Finding` rows (typically one per
+meaningful file insight). Those rows power **`get_previous_findings()`** in later
+sessions for the same repository.
 
 ```
 id               UUID, primary key
@@ -149,16 +166,32 @@ created_at       DateTimeField, auto
 ```
 
 ### Model: `ToolCallLog`
-Every tool invocation the agent makes, logged for auditability and replay.
+Every tool invocation the agent makes, logged for auditability and replay. Rows are
+**created only by the tool dispatcher** after each tool returns — this is **not** a
+callable LLM tool. Each row stores a foreign key to `ResearchSession` (Django’s related
+DB column is typically `session_id`). One session may have **many** `ToolCallLog` rows.
 
 ```
 id               UUID, primary key
 session          ForeignKey → ResearchSession
-tool_name        CharField                  # list_files | read_file | search_code | save_finding | ...
+tool_name        CharField                  # get_directory_tree | get_file_outline | read_method | read_file | ...
 input_params     JSONField                  # exactly what the agent passed
 output_summary   TextField                  # truncated/summarized result
 called_at        DateTimeField, auto
 ```
+
+### Schema relationships (summary)
+
+- **`Repository`** — at most **one row per sanitized repo URL** (`url` unique); tracks
+  `name`, `last_analyzed_at`, and creation time.
+- **`ResearchSession`** — **one row per question** asked via the API; FK to
+  `Repository`; holds question text, embedding, answer (nullable until done), `source`,
+  `token_usage`, timestamps.
+- **`Finding`** — **zero or more** rows per session; mid-loop notes from `save_finding`.
+- **`ToolCallLog`** — **zero or more** rows per session; automatic audit log per tool call.
+
+See [`DECISIONS.md`](./DECISIONS.md) (Design Decisions → database schema) for the same
+layout in prose.
 
 ### pgvector setup
 ```sql
@@ -244,7 +277,8 @@ POST /api/sessions/
 ┌─────────────────────────────┐
 │ STEP 7: Full Traversal      │
 │  Tool-calling agent loop    │
-│  (see section below)        │
+│  Prefer outline-first reads │
+│  (methods before full files)│
 │  source: "full_traversal"   │
 └────────────┬────────────────┘
              │
@@ -270,6 +304,24 @@ The agent is given a defined set of tools and runs a **multi-step reasoning loop
 calling tools until it has sufficient context to produce a final answer with
 file and line references.
 
+**Outline-first traversal (required strategy for source code files):**
+
+1. Prefer **`get_file_outline(path)`** before loading an entire module. Language is
+   inferred from the file extension. The server runs **language-specific regular
+   expressions** (not a full parser) to list **method / function / type names**
+   and their starting line numbers only — **no bodies** are sent to the LLM yet.
+2. The LLM picks which symbols are relevant to the question, then calls
+   **`read_method(path, method_name [, line_start])`** to retrieve **only that
+   symbol’s body** (with line numbers). Optional `line_start` disambiguates
+   overloaded names when needed.
+3. Use **`read_file(path)`** as a fallback: small files, non-code artifacts
+   (README, JSON, YAML, manifests), unsupported extensions, or when the outline is
+   empty.
+
+Raw file bytes are fetched once per path per session and cached server-side so
+`get_file_outline` followed by multiple `read_method` calls does not multiply
+GitHub API traffic for the same file.
+
 ### Agent Tools
 
 #### Code Exploration Tools
@@ -284,13 +336,26 @@ list_files(path: str) -> list[str]
 # Lists files and directories at a given path in the repo.
 # GitHub API: GET /repos/{owner}/{repo}/contents/{path}
 
+get_file_outline(path: str) -> str
+# Returns ONLY method/function/class/type names + starting line numbers for a
+# code file — NOT full bodies.
+# Implementation: agent/services/outline.py — extension → language-id → regex
+# table (Python, JS/TS, Go, Rust, Java, C#, Kotlin, Swift, Ruby, PHP, C/C++).
+# GitHub API: same as read_file_raw (single contents fetch).
+
+read_method(path: str, method_name: str, line_start: int | None = None) -> str
+# Returns ONE symbol’s body (line-numbered) after the outline pass.
+# Body slicing: indentation (Python), braces (C-family), def…end pairing (Ruby).
+# Counts toward the session file-read budget on first use of that path.
+
 read_file(path: str) -> str
-# Reads file content decoded from base64, with line numbers prepended.
+# Reads full file content decoded from base64, with line numbers prepended.
+# Prefer outline + read_method for large application code modules.
 # GitHub API: GET /repos/{owner}/{repo}/contents/{path}
 
 get_file_summary(path: str) -> str
 # Returns the first 80 lines of a file.
-# Use before read_file on any file larger than 50KB.
+# Use before read_file on large non-outline files.
 
 search_code(query: str) -> list[dict]
 # Searches the codebase for a keyword or symbol.
@@ -321,19 +386,24 @@ list_past_sessions(repo_url: str) -> list[dict]
 ```
 System prompt is set once per session (see LLM section below).
 
-LOOP:
+LOOP (includes any tool_call: get_directory_tree, get_file_outline, read_method,
+      read_file, search_code, save_finding, get_previous_findings, …):
+
   while tool_calls_made < MAX_TOOL_CALLS:
       response = llm.chat(messages, tools=TOOL_DEFINITIONS)
 
-      if response.finish_reason == "stop":
-          break   # agent decided it has sufficient context
+      if assistant emits no tool_calls:
+          break   # textual answer ready (or budget reached after tool round)
 
       for each tool_call in response.tool_calls:
           result = dispatch(tool_call)
           log_tool_call(...)          # always written to ToolCallLog
           messages.append(tool_result)
 
-  final_answer = extract_text(response)
+  # Implementation detail: if there is still no textual answer, one extra
+  # llm.chat(..., tools=None) may run to force a prose final answer.
+
+  final_answer = extract_text(last assistant message)
   references   = parse_file_citations(final_answer)   # [[path:line_start-line_end]]
 ```
 
@@ -360,23 +430,30 @@ MAX_LOOP = settings.AGENT_MAX_LOOP
 Every iteration of the loop must print to stdout:
 
 ```
-[Tool Call 3/30] search_code         |  tokens used: 1,842
-[Tool Call 4/30] read_file           |  tokens used: 2,109
-[Tool Call 5/30] save_finding        |  tokens used: 2,115
+[Tool Call 3/30] search_code |  tokens this round: 412
+[Tool Call 4/30] read_file (src/app.py) |  tokens this round: 698
+[Tool Call 5/30] save_finding (src/app.py) |  tokens this round: 698
 
 Total tokens used: 6,066
 ```
 
+Each line’s **`tokens this round`** is the usage from **that LLM completion only**
+(the assistant message that emitted those tool calls). Multiple tools from the same
+completion repeat the same number — usage is billed per completion, not per tool.
+File-touching tools append **`(path)`** or **`(path, method_name)`** so logs stay readable.
+
 Implementation in `agent_loop.py`:
 ```python
-print(f"[Tool Call {tool_call_count}/{MAX_LOOP}] {tool_name:<20} |  tokens used: {total_tokens:,}")
+round_total = response.total_tokens  # this completion only
+suffix = _tool_log_suffix(tool_name, tc.function.arguments)  # e.g. " (src/app.py)"
+print(f"[Tool Call {n}/{MAX_LOOP}] {tool_name}{suffix} |  tokens this round: {round_total:,}")
 
-# After the loop ends:
+# After all rounds:
 print(f"\nTotal tokens used: {cumulative_tokens:,}")
 ```
 
 `total_tokens` is read from `response.usage.total_tokens` after each LLM call.
-`cumulative_tokens` is the running sum across all LLM calls in the session.
+`cumulative_tokens` is the running sum across all LLM calls in the session (printed once at the end).
 
 ---
 
@@ -421,7 +498,24 @@ requires re-reading them.
 6. Other files          (only if still insufficient — up to the cap)
 ```
 
-Stop as soon as `finish_reason == "stop"` or guardrail caps are hit.
+**Within each candidate source module:** always **outline first** —
+`get_file_outline` → choose symbols → `read_method` → only then `read_file` if needed.
+
+### Phase 5 — Language-aware outlines
+
+- Extension → language id (`outline.py`): e.g. `.py`, `.js`, `.ts`, `.tsx`, `.go`,
+  `.rs`, `.java`, `.cs`, `.kt`, `.swift`, `.rb`, `.php`, `.c`, `.cpp`, ….
+- Each language maps to a curated list of regex patterns matching **declaration
+  lines** (functions, classes, structs, Rust `fn`, Ruby `def`, etc.).
+- Extraction is **heuristic**, not an AST parser: fast, dependency-free, and good
+  enough for “what exists in this file?” summaries; ambiguity is resolved when the LLM
+  passes `line_start` into `read_method`.
+- **`get_file_outline` does not count against the distinct-file-read budget.** It still
+  triggers **one GitHub fetch** per path unless the raw content is already cached for
+  the session; **`read_method` consumes the budget slot when it is the first access
+  to that path**.
+
+Stop as soon as the model answers without further tools or guardrail caps are hit.
 
 ---
 
@@ -442,7 +536,7 @@ Stop as soon as `finish_reason == "stop"` or guardrail caps are hit.
 - Read `LLM_BASE_URL`, `LLM_MODEL_NAME`, `LLM_API_KEY` from `.env` at startup
 - Track and persist `usage.prompt_tokens`, `usage.completion_tokens` from every response
 
-**System prompt template:**
+**System prompt template (conceptual — full text lives in `agent_loop.py`):**
 ```
 You are a codebase research agent with tools to explore a GitHub repository.
 Repository: {repo_url}
@@ -450,12 +544,16 @@ Question: {question}
 
 Rules:
 1. Always call get_directory_tree() first.
-2. Always call get_previous_findings() before reading any files.
-3. Call save_finding() whenever you learn something meaningful about a file.
-4. Cite files in your final answer as [[path/to/file.py:line_start-line_end]].
-5. Stop calling tools once you can answer confidently. Do not over-explore.
-6. If you cannot determine the answer, say so clearly. Do not hallucinate.
-7. Your final answer must include specific file paths, function names, and line numbers.
+2. Always call get_previous_findings() before reading substantive file content.
+3. For CODE files: outline-first strategy —
+   · get_file_outline(path) → pick relevant method_name line(s)
+   · read_method(path, method_name) for each chosen symbol
+   · read_file(path) only for small/non-code/overview files or when outline unsupported
+4. Call save_finding() whenever you learn something meaningful about a file.
+5. Cite files in your final answer as [[path/to/file.py:line_start-line_end]].
+6. Stop calling tools once you can answer confidently. Do not over-explore.
+7. If you cannot determine the answer, say so clearly. Do not hallucinate.
+8. Your final answer must include specific file paths, function names, and line numbers.
 ```
 
 ---
@@ -539,15 +637,19 @@ project_root/
     ├── migrations/                # committed Django migrations
     ├── tests/
     │   ├── test_pipeline.py       # key unit tests for pipeline steps
-    │   └── test_tools.py          # tool dispatcher tests
+    │   ├── test_tools.py          # tool dispatcher tests
+    │   ├── test_outline.py        # regex outline + body extraction tests
+    │   └── …
     └── services/
         ├── sanitizer.py           # URL cleaning (trailing slash removal, etc.)
         ├── embeddings.py          # embedding generation + similarity search
         ├── cache.py               # semantic cache lookup and save logic
-        ├── github.py              # GitHub API: tree, file fetch, code search
+        ├── github.py              # GitHub API: tree, file fetch (raw + numbered), code search
         ├── classifier.py          # question theme → prioritized file list
+        ├── outline.py             # extension → regex table; signatures + body slicing
         ├── tools.py               # all agent tool implementations + dispatcher
         ├── agent_loop.py          # main LLM tool-calling loop with guardrails
+        ├── pipeline.py            # orchestration (cache → knowledge → readme → traversal)
         └── llm.py                 # OpenAI-compatible chat completion wrapper
 ```
 
@@ -573,7 +675,9 @@ project_root/
 3. **Agent tools write to DB mid-loop** — `save_finding` and auto-logged `ToolCallLog`
    happen during traversal, not as post-processing. Persistence is part of the workflow.
 4. **Never clone the repo** — GitHub API only for all file access.
-5. **Fetch lazily** — tree first, then targeted reads; hard cap at 15 files.
+5. **Fetch lazily** — tree first, then targeted reads; **`AGENT_MAX_FILE_READS`**
+   caps distinct files incurring fetch per session (~15 default). Outline requests
+   share one raw fetch per path; additional `read_method` on the same file reuses cache.
 6. **`answer` is nullable on insert** — set NULL initially, updated on completion.
    Prevents duplicate work on concurrent identical requests.
 7. **Token usage must be tracked and stored** — `prompt_tokens`, `completion_tokens`,
@@ -584,3 +688,6 @@ project_root/
    invocation. Never expose it to the LLM as a callable tool.
 10. **pgvector must be installed on PostgreSQL** before running migrations:
     `CREATE EXTENSION IF NOT EXISTS vector;`
+11. **Outline-first reads** — for application source, prefer signatures via
+    `get_file_outline` plus targeted bodies via `read_method` before `read_file`;
+    regex tables live in `agent/services/outline.py`.

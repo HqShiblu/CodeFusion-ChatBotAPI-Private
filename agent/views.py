@@ -1,13 +1,3 @@
-"""HTTP views for the Codebase Research Agent.
-
-Endpoints:
-
-    POST /api/sessions/                    -> start a new research session
-    GET  /api/sessions/<uuid>/             -> retrieve full session detail
-    GET  /api/sessions/?repo=<url>         -> list sessions for a repo
-    GET  /api/repos/                       -> list all researched repositories
-"""
-
 from __future__ import annotations
 
 import logging
@@ -23,10 +13,51 @@ from agent.serializers import (
     ResearchSessionDetailSerializer,
     ResearchSessionSummarySerializer,
 )
+from agent.services.github import GitHubAPIError
 from agent.services.pipeline import run_pipeline
 from agent.services.sanitizer import InvalidRepositoryURL, sanitize_repo_url
 
 logger = logging.getLogger(__name__)
+
+
+def _error_response(http_status: int, message: str = "An error occurred") -> Response:
+    """Return a sanitized error payload.
+
+    The shape is intentionally minimal — `status` + `error` — so we never leak
+    upstream provider details (API keys, user IDs, raw error metadata, etc.).
+    The actual exception is logged server-side via `logger.exception`.
+    """
+    return Response(
+        {"status": str(http_status), "error": message},
+        status=http_status,
+    )
+
+
+def _classify_pipeline_error(exc: Exception) -> tuple[int, str]:
+    """Map an exception coming out of the pipeline to (http_status, message).
+
+    Upstream provider failures (LLM rate limits, GitHub API errors, network
+    issues) are surfaced as 5xx gateway errors. Everything else is a 500.
+    """
+    # OpenAI-compatible client errors. Import lazily so the module loads even
+    # if the openai package is not installed in some test environments.
+    try:
+        from openai import (
+            APIConnectionError,
+            APIError,
+            APITimeoutError,
+            RateLimitError,
+        )
+    except ImportError:  # pragma: no cover - openai is in requirements
+        APIError = APIConnectionError = APITimeoutError = RateLimitError = ()  # type: ignore[assignment]
+
+    if isinstance(exc, (RateLimitError, APITimeoutError, APIConnectionError)):
+        return status.HTTP_504_GATEWAY_TIMEOUT, "Upstream LLM provider is unavailable"
+    if isinstance(exc, APIError):
+        return status.HTTP_502_BAD_GATEWAY, "Upstream LLM provider returned an error"
+    if isinstance(exc, GitHubAPIError):
+        return status.HTTP_502_BAD_GATEWAY, "Upstream GitHub API error"
+    return status.HTTP_500_INTERNAL_SERVER_ERROR, "An error occurred"
 
 
 @api_view(["GET", "POST"])
@@ -39,16 +70,13 @@ def sessions_list_create(request):
                 repository_url=serializer.validated_data["repository_url"],
                 question=serializer.validated_data["question"],
             )
-        except InvalidRepositoryURL as exc:
-            return Response(
-                {"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST
-            )
+        except InvalidRepositoryURL:
+            logger.info("Rejected invalid repository_url", exc_info=True)
+            return _error_response(status.HTTP_400_BAD_REQUEST, "Invalid repository URL")
         except Exception as exc:
             logger.exception("Pipeline crashed")
-            return Response(
-                {"error": f"internal error: {exc}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            http_status, message = _classify_pipeline_error(exc)
+            return _error_response(http_status, message)
 
         return Response(
             {
@@ -74,8 +102,8 @@ def sessions_list_create(request):
     if repo_url:
         try:
             parsed = sanitize_repo_url(repo_url)
-        except InvalidRepositoryURL as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except InvalidRepositoryURL:
+            return _error_response(status.HTTP_400_BAD_REQUEST, "Invalid repository URL")
         qs = qs.filter(repository__url=parsed.url)
     qs = qs.order_by("-started_at")[:100]
     data = ResearchSessionSummarySerializer(qs, many=True).data
@@ -91,7 +119,7 @@ def session_detail(request, session_id):
             .get(pk=session_id)
         )
     except ResearchSession.DoesNotExist:
-        return Response({"error": "session not found"}, status=status.HTTP_404_NOT_FOUND)
+        return _error_response(status.HTTP_404_NOT_FOUND, "Session not found")
     return Response(ResearchSessionDetailSerializer(session).data)
 
 

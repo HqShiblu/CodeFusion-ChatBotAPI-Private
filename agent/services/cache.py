@@ -1,5 +1,3 @@
-"""Semantic cache lookup using pgvector cosine similarity."""
-
 from __future__ import annotations
 
 import logging
@@ -11,13 +9,13 @@ from agent.models import ResearchSession
 logger = logging.getLogger(__name__)
 
 
-def find_cached_answer(repo_url: str, question_vector: list[float]):
-    """Return the best prior `ResearchSession` for this repo above the
-    similarity threshold, or `None`.
+_LEGACY_FAILURE_PREFIXES = (
+    "(agent did not produce an answer)",
+    "The agent was unable to produce an answer",
+)
 
-    Falls back gracefully when pgvector isn't available (e.g. SQLite tests):
-    in that case there is no cache and we return None.
-    """
+
+def find_cached_answer(repo_url: str, question_vector: list[float]):
     threshold = settings.SEMANTIC_CACHE_THRESHOLD
     try:
         from pgvector.django import CosineDistance
@@ -37,9 +35,17 @@ def find_cached_answer(repo_url: str, question_vector: list[float]):
             )
             .order_by("-started_at")
         )
-        return qs.first()
+        for candidate in qs[:5]:
+            ans = (candidate.answer or "").strip()
+            if not ans:
+                continue
+            if any(ans.startswith(p) for p in _LEGACY_FAILURE_PREFIXES):
+                logger.info(
+                    "Skipping legacy failure-sentinel cache row %s", candidate.id
+                )
+                continue
+            return candidate
+        return None
     except Exception as exc:
-        # In test environments using SQLite, pgvector operators raise.
-        # That's fine — semantic cache simply doesn't apply there.
         logger.debug("Semantic cache lookup skipped: %s", exc)
         return None

@@ -1,5 +1,3 @@
-"""DRF serializers for the agent API."""
-
 from __future__ import annotations
 
 from rest_framework import serializers

@@ -1,13 +1,3 @@
-"""Agent tools: definitions, dispatcher, and automatic ToolCallLog persistence.
-
-Every public tool here is exposed to the LLM via the JSON schemas in
-`TOOL_DEFINITIONS`. The dispatcher is responsible for two things:
-
-1. Calling the right Python function with the parsed arguments.
-2. Writing a `ToolCallLog` row after every invocation — this is *not* a tool
-   the LLM can call; it's implicit on every dispatch.
-"""
-
 from __future__ import annotations
 
 import json
@@ -17,11 +7,15 @@ from typing import Any
 
 from agent.models import Finding, Repository, ResearchSession, ToolCallLog
 from agent.services.github import GitHubAPIError, GitHubClient
+from agent.services.outline import (
+    detect_language,
+    extract_method_body,
+    extract_outline,
+    format_outline,
+)
 
 logger = logging.getLogger(__name__)
 
-
-# --- Tool schemas exposed to the LLM ----------------------------------------
 
 TOOL_DEFINITIONS: list[dict] = [
     {
@@ -52,10 +46,61 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_file_outline",
+            "description": (
+                "PREFERRED FIRST STEP for any code file. Returns just the list of "
+                "method/class names and their starting line numbers — NOT the bodies. "
+                "Use this to decide which methods are worth reading before paying the "
+                "cost of loading the full file. Language is detected from the file "
+                "extension. Returns an empty result for unsupported languages and "
+                "data/markup files (READMEs, JSON, YAML, etc.) — fall back to "
+                "read_file for those."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the file inside the repo."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_method",
+            "description": (
+                "Read the body of a single method/function (or class) from a file. "
+                "Use this AFTER get_file_outline to pull only the specific methods "
+                "you care about, instead of loading the entire file. Returns the "
+                "body with line numbers prepended."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the file inside the repo."},
+                    "method_name": {
+                        "type": "string",
+                        "description": "Method or class name as it appears in the outline.",
+                    },
+                    "line_start": {
+                        "type": "integer",
+                        "description": "Optional: disambiguate when multiple methods share a name (overloads).",
+                    },
+                },
+                "required": ["path", "method_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_file",
             "description": (
                 "Read a file's full content (with line numbers prepended). "
-                "Use get_file_summary first if the file is large."
+                "Prefer get_file_outline + read_method on code files; use read_file "
+                "only for small files (<200 lines) or non-code files such as README, "
+                "config, and manifest files."
             ),
             "parameters": {
                 "type": "object",
@@ -142,23 +187,28 @@ _OUTPUT_TRUNCATE = 2000
 
 @dataclass
 class ToolContext:
-    """Container for everything the tool functions need access to.
-
-    A fresh ToolContext is built once per session and passed into the
-    dispatcher. The dispatcher does not look at Django settings or globals.
-    """
 
     session: ResearchSession
     repository: Repository
     github: GitHubClient
-    file_reads: set[str]                    # files already read this session
+    file_reads: set[str]
     max_file_reads: int
 
     # Cached state across calls
     _tree_cache: list[str] | None = None
+    _raw_content_cache: dict[str, str] | None = None  # path -> raw file text
 
+    def get_raw_content(self, path: str) -> str:
+        """Fetch (and memoize within this session) the raw text of a file.
 
-# --- Tool implementations ---------------------------------------------------
+        Reused by `get_file_outline` and `read_method` so the same file isn't
+        downloaded twice during a single agent run.
+        """
+        if self._raw_content_cache is None:
+            self._raw_content_cache = {}
+        if path not in self._raw_content_cache:
+            self._raw_content_cache[path] = self.github.read_file_raw(path)
+        return self._raw_content_cache[path]
 
 
 def _tool_get_directory_tree(ctx: ToolContext, _args: dict) -> str:
@@ -183,7 +233,6 @@ def _tool_list_files(ctx: ToolContext, args: dict) -> str:
 def _tool_read_file(ctx: ToolContext, args: dict) -> str:
     path = args["path"]
     if path in ctx.file_reads:
-        # Allow re-reads but warn the LLM so it doesn't waste budget.
         return ctx.github.read_file(path) + "\n\n[note] this file was already read earlier in the session."
     if len(ctx.file_reads) >= ctx.max_file_reads:
         return (
@@ -197,6 +246,75 @@ def _tool_read_file(ctx: ToolContext, args: dict) -> str:
 
 def _tool_get_file_summary(ctx: ToolContext, args: dict) -> str:
     return ctx.github.get_file_summary(args["path"])
+
+
+def _tool_get_file_outline(ctx: ToolContext, args: dict) -> str:
+    """Return just the method/class signatures of a file.
+
+    Cheap relative to read_file: no body text is sent back. Use this to let
+    the LLM pick which specific methods are worth loading. Does NOT consume
+    the file-read budget — only `read_method` and `read_file` do.
+    """
+    path = args["path"]
+    language = detect_language(path)
+    if language is None:
+        return (
+            f"[unsupported] No outline available for {path} (unknown language). "
+            "Fall back to read_file or get_file_summary."
+        )
+    raw = ctx.get_raw_content(path)
+    methods = extract_outline(raw, language)
+    return format_outline(path, language, methods)
+
+
+def _tool_read_method(ctx: ToolContext, args: dict) -> str:
+    """Return only the body of a single named method/class.
+
+    Counts against the file-read budget on the FIRST method extracted from a
+    given file (subsequent methods in the same file are free, since the file
+    is already fetched and cached).
+    """
+    path = args["path"]
+    name = args["method_name"]
+    hint_line = args.get("line_start")
+
+    language = detect_language(path)
+    if language is None:
+        return (
+            f"[unsupported] Cannot extract methods from {path} (unknown language). "
+            "Fall back to read_file."
+        )
+
+    is_new_file = path not in ctx.file_reads
+    if is_new_file and len(ctx.file_reads) >= ctx.max_file_reads:
+        return (
+            f"[blocked] File-read cap reached ({ctx.max_file_reads}). "
+            "Produce your final answer from the files already collected."
+        )
+
+    raw = ctx.get_raw_content(path)
+    methods = extract_outline(raw, language)
+    matches = [m for m in methods if m.name == name]
+    if not matches:
+        available = ", ".join(sorted({m.name for m in methods})[:30]) or "(none)"
+        return (
+            f"[not found] No method named {name!r} in {path}. "
+            f"Available: {available}"
+        )
+
+    if hint_line is not None:
+        matches.sort(key=lambda m: abs(m.line_start - int(hint_line)))
+    method = matches[0]
+
+    body, line_start, line_end = extract_method_body(raw, method)
+    if is_new_file:
+        ctx.file_reads.add(path)
+
+    header = (
+        f"{path} :: {method.name} (lines {line_start}-{line_end}, {method.kind}, {method.language})\n"
+        f"{'-' * 60}\n"
+    )
+    return header + body
 
 
 def _tool_search_code(ctx: ToolContext, args: dict) -> str:
@@ -260,6 +378,8 @@ def _tool_list_past_sessions(ctx: ToolContext, _args: dict) -> str:
 _DISPATCH = {
     "get_directory_tree": _tool_get_directory_tree,
     "list_files": _tool_list_files,
+    "get_file_outline": _tool_get_file_outline,
+    "read_method": _tool_read_method,
     "read_file": _tool_read_file,
     "get_file_summary": _tool_get_file_summary,
     "search_code": _tool_search_code,
@@ -292,7 +412,6 @@ def dispatch_tool_call(ctx: ToolContext, tool_name: str, raw_arguments: str) -> 
 
     summary = output if len(output) <= _OUTPUT_TRUNCATE else output[:_OUTPUT_TRUNCATE] + "\n... [truncated]"
 
-    # ToolCallLog is automatic — never exposed to the LLM.
     try:
         ToolCallLog.objects.create(
             session=ctx.session,

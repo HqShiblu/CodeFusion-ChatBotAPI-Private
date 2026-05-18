@@ -188,58 +188,98 @@ Every time the agent calls a tool, a line is printed to stdout before the result
 processed:
 
 ```
-[Tool Call 3/30] search_code         |  tokens used: 1,842
-[Tool Call 4/30] read_file           |  tokens used: 2,109
-[Tool Call 5/30] save_finding        |  tokens used: 2,115
+[Tool Call 3/30] search_code |  tokens this round: 412
+[Tool Call 4/30] read_file (src/app.py) |  tokens this round: 698
+[Tool Call 5/30] save_finding (src/app.py) |  tokens this round: 698
 ```
 
 **Why:** The agent loop is opaque by default — without logging, there is no visibility
 into what the agent is doing, why it is slow, or whether it is stuck. Printing each
 tool call in real time makes the agent's reasoning transparent during development and
-debugging, and makes runaway or looping behavior immediately obvious.
+debugging, and makes runaway or looping behavior immediately obvious. Paths are shown
+for file-touching tools so you can see what was opened without digging into logs.
 
 ---
 
-### 14. Token usage is printed per LLM call and totalled at the end
+### 14. Outline-first traversal: read method names before method bodies
 
-Each tool call line prints `tokens used: N` — the cumulative token count from
-`response.usage.total_tokens` at that point in the session. After the loop exits, a
-final summary line is printed:
+For any code file the agent considers, it does NOT load the whole file by
+default. Instead it follows a two-step flow:
+
+1. **`get_file_outline(path)`** — runs a language-aware regex over the file
+   and returns ONLY the method/class names and their starting line numbers.
+   No method bodies are sent to the LLM at this stage. The language is
+   detected from the file extension and the right regex set is picked from
+   the table in `agent/services/outline.py`. Supported today: Python,
+   JavaScript/TypeScript, Go, Rust, Java, C#, Kotlin, Swift, Ruby, PHP,
+   C/C++.
+2. **`read_method(path, method_name)`** — given a name the LLM picked from
+   the outline, returns ONLY that method's body. Body boundaries are found
+   by indentation tracking (Python), `def…end` matching (Ruby), or brace
+   balancing (C-family). Multiple method bodies from the same file share a
+   single underlying GitHub fetch (the raw file is cached on the
+   `ToolContext` for the rest of the session).
+
+The agent's system prompt instructs the model to prefer this flow on any
+code file and to fall back to `read_file` only when the file is small, the
+language is unsupported, or the file is non-code (README, config, manifest).
+
+**Why:** Reading a whole 1,000-line file to figure out which 40 lines
+matter is the dominant cost in any non-trivial codebase. The outline is
+typically 1–3% of the size of the file but carries 80%+ of the signal the
+LLM needs to make a routing decision (which method does this question
+actually live in?). Once the model picks the relevant methods, loading
+only those bodies cuts token spend dramatically and keeps the agent inside
+its context window on large repositories.
+
+The `read_method` call still counts against the file-read budget on the
+first method extracted from a given file (the file *was* fetched after
+all), but subsequent methods from the same file are free — the file's raw
+text is memoized on the `ToolContext` for the lifetime of the session,
+preventing duplicate GitHub API calls when the LLM walks several methods
+in one module.
+
+---
+
+### 15. Token usage per LLM round and a session total at the end
+
+Each tool call line prints **`tokens this round: N`** — that N is from the single
+LLM completion that emitted those tool calls (`response.usage.total_tokens` for that
+response only). When the assistant returns multiple tools at once, each printed line
+shows the same number, because billing is per completion, not per tool. After all
+rounds finish, one line prints the **cumulative** total:
 
 ```
 Total tokens used: 6,066
 ```
 
-This total is also saved to `ResearchSession.token_usage` in the database.
+This cumulative total is also saved to `ResearchSession.token_usage` in the database.
 
-**Why:** Token usage is the primary cost driver for LLM applications. Without
-per-call visibility, it is impossible to know which tool calls are expensive, whether
-the agent is being efficient, or what a session actually cost. Printing it live lets
-developers catch runaway token usage immediately rather than after the fact on an
-invoice. Storing it in the DB enables cost analysis across sessions.
+**Why:** Seeing usage **per completion** makes it obvious which LLM rounds grew the
+context (e.g. after a huge `read_file` result). The final total matches what you bill
+against for the session. Storing it in the DB enables cost analysis across sessions.
+
+---
+
+### 16. Four Django models: `Repository`, `ResearchSession`, `Finding`, `ToolCallLog`
+
+Four models organize persisted state for the agent.
+
+`Repository` tracks repositories that are being searched. There is **one row per repository** (`url` is unique); metadata such as display name and `last_analyzed_at` stays here so every question asked against that repo joins the same record.
+
+`ResearchSession` holds the question, its embedding, the final answer, source category, completion timestamps, and token usage. Each new API question creates a **new** session row linked to its `Repository` via a foreign key.
+
+`ToolCallLog` is written automatically by the tool dispatcher after every invocation — it **is not** exposed to the LLM as a callable tool. Each row logs which tool ran, its inputs, and a truncated summary of the output; the schema stores this under a **foreign key** to `ResearchSession` (Django’s database column name is **`session_id`**). One `ResearchSession` may have **many** `ToolCallLog` rows — an audit trail of every step taken in that session.
+
+`Finding` rows are produced mid-loop via the **`save_finding`** tool whenever the agent records a meaningful conclusion about **a particular file**. One `ResearchSession` **may have many** `Finding` rows (typically different files or follow-up observations). Across sessions these drive **`get_previous_findings()`** so later runs reuse prior characterization instead of re-reading everything from scratch.
+
+**Why normalized this way:** `Repository`/`ResearchSession` split avoids duplicating repo metadata on each question row. Embedding sits on `ResearchSession` because it derives from that session’s question text. `Finding`/`ToolCallLog` attach to sessions so retrieval and auditing stay session-scoped and join-friendly.
 
 ---
 
 ## Database Schema Rationale
 
-Four models: `Repository`, `ResearchSession`, `Finding`, `ToolCallLog`.
-
-`Repository` is separated from `ResearchSession` so that metadata about a repo
-(last analyzed, name) is stored once and shared across all sessions for that repo,
-rather than duplicated on every question row.
-
-`ResearchSession` holds the question, its embedding, the final answer, and token
-usage. The embedding lives here rather than on a separate table because it is
-intrinsically tied to the question text of this session.
-
-`Finding` is written by the agent mid-loop via the `save_finding` tool. These are
-the agent's working notes — each one records what it concluded about a specific file
-during this session. They also feed `get_previous_findings()` in future sessions,
-letting the agent skip files it has already characterized.
-
-`ToolCallLog` is written automatically by the tool dispatcher after every invocation.
-It is not exposed to the LLM as a callable tool. It exists for auditability — every
-step the agent took can be replayed and inspected.
+Operational detail at scale mirrors the relational layout above (**Design decision §16**).
 
 **At scale:** The `question_embedding` vector index (`ivfflat`, cosine ops) will need
 tuning as the table grows. The `Finding` and `ToolCallLog` tables will grow fast on

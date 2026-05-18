@@ -1,5 +1,3 @@
-"""Unit tests for the reference parser in the pipeline."""
-
 from __future__ import annotations
 
 from agent.services.pipeline import parse_references

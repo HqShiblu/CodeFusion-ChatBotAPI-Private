@@ -1,5 +1,3 @@
-"""Unit tests for question classification and path ranking."""
-
 from __future__ import annotations
 
 from agent.services.classifier import classify_question, rank_paths

@@ -1,9 +1,3 @@
-"""Repository URL sanitization and parsing.
-
-Step 1 of the pipeline. Runs before anything touches the database, the embedding
-model, or any external API.
-"""
-
 from __future__ import annotations
 
 import re
@@ -17,7 +11,7 @@ class InvalidRepositoryURL(ValueError):
 
 @dataclass(frozen=True)
 class ParsedRepo:
-    url: str          # canonical, no trailing slash, no .git suffix
+    url: str
     owner: str
     repo: str
 
@@ -30,16 +24,6 @@ _GITHUB_PATH_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 
 
 def sanitize_repo_url(raw_url: str) -> ParsedRepo:
-    """Normalize a GitHub URL and pull out owner/repo.
-
-    Accepts inputs such as:
-        - https://github.com/owner/repo
-        - https://github.com/owner/repo/
-        - https://github.com/owner/repo.git
-        - http://github.com/owner/repo
-
-    Rejects everything that isn't a GitHub repo path with both owner and repo.
-    """
     if not raw_url or not isinstance(raw_url, str):
         raise InvalidRepositoryURL("repository_url must be a non-empty string")
 
@@ -47,7 +31,6 @@ def sanitize_repo_url(raw_url: str) -> ParsedRepo:
     if not cleaned:
         raise InvalidRepositoryURL("repository_url cannot be blank")
 
-    # Make sure there's a scheme so urlparse works.
     if not re.match(r"^https?://", cleaned, flags=re.IGNORECASE):
         cleaned = "https://" + cleaned
 

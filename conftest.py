@@ -1,9 +1,3 @@
-"""Pytest configuration for the project.
-
-Forces SQLite + disables pgvector-specific behavior so tests run without a
-local PostgreSQL or downloaded sentence-transformers model.
-"""
-
 from __future__ import annotations
 
 import os
@@ -18,11 +12,10 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("DEBUG", "True")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
-import django  # noqa: E402
+import django
 
 django.setup()
 
 
-def pytest_configure(config):  # noqa: D401
-    """Pytest hook — anything that must run after Django setup goes here."""
+def pytest_configure(config):
     sys.modules.setdefault("agent_tools_placeholder", type(sys)("agent_tools_placeholder"))

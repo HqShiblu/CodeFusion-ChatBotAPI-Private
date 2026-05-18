@@ -1,12 +1,3 @@
-"""Tests for the agent tool dispatcher.
-
-Exercises the dispatcher with a fake GitHub client so we can verify:
-    - ToolCallLog rows are written automatically
-    - save_finding persists Finding rows tied to the session
-    - get_previous_findings pulls notes from *other* sessions on the same repo
-    - read_file is gated by the file-read cap
-"""
-
 from __future__ import annotations
 
 import json
@@ -37,8 +28,11 @@ class FakeGitHubClient:
     def list_contents(self, path: str):
         return [{"path": p.path, "type": p.type} for p in self.tree if p.path.startswith(path)]
 
-    def read_file(self, path: str) -> str:
+    def read_file_raw(self, path: str) -> str:
         return self.files.get(path, "")
+
+    def read_file(self, path: str) -> str:
+        return self.read_file_raw(path)
 
     def get_file_summary(self, path: str, max_lines: int = 80) -> str:
         return "\n".join(self.read_file(path).splitlines()[:max_lines])
@@ -121,3 +115,77 @@ class ToolDispatchTests(TestCase):
         ctx = _make_ctx()
         out = dispatch_tool_call(ctx, "nope", "{}")
         self.assertIn("Unknown tool", out)
+
+    def test_get_file_outline_returns_signatures_only(self):
+        ctx = _make_ctx(
+            extra_files={
+                "lib.py": (
+                    "def alpha():\n"
+                    "    return 1\n"
+                    "\n"
+                    "def beta(x):\n"
+                    "    return x * 2\n"
+                ),
+            }
+        )
+        out = dispatch_tool_call(ctx, "get_file_outline", json.dumps({"path": "lib.py"}))
+        self.assertIn("alpha", out)
+        self.assertIn("beta", out)
+        # Importantly: the bodies are NOT in the outline.
+        self.assertNotIn("return 1", out)
+        self.assertNotIn("return x * 2", out)
+        # Outline alone should not consume the file-read budget.
+        self.assertNotIn("lib.py", ctx.file_reads)
+
+    def test_read_method_returns_only_the_method_body(self):
+        ctx = _make_ctx(
+            extra_files={
+                "lib.py": (
+                    "def alpha():\n"
+                    "    return 1\n"
+                    "\n"
+                    "def beta(x):\n"
+                    "    return x * 2\n"
+                ),
+            }
+        )
+        out = dispatch_tool_call(
+            ctx,
+            "read_method",
+            json.dumps({"path": "lib.py", "method_name": "beta"}),
+        )
+        self.assertIn("def beta", out)
+        self.assertIn("return x * 2", out)
+        self.assertNotIn("def alpha", out)
+        self.assertIn("lib.py", ctx.file_reads)
+
+    def test_read_method_not_found_lists_available(self):
+        ctx = _make_ctx(extra_files={"lib.py": "def alpha():\n    return 1\n"})
+        out = dispatch_tool_call(
+            ctx,
+            "read_method",
+            json.dumps({"path": "lib.py", "method_name": "nope"}),
+        )
+        self.assertIn("not found", out.lower())
+        self.assertIn("alpha", out)
+
+    def test_outline_then_read_method_shares_single_fetch(self):
+        """The same file should be downloaded only once across outline +
+        read_method calls within one session."""
+        ctx = _make_ctx(extra_files={"lib.py": "def alpha():\n    return 1\n"})
+        calls = {"n": 0}
+        original = ctx.github.read_file_raw
+
+        def counted_read(path: str) -> str:
+            calls["n"] += 1
+            return original(path)
+
+        ctx.github.read_file_raw = counted_read  # type: ignore[method-assign]
+
+        dispatch_tool_call(ctx, "get_file_outline", json.dumps({"path": "lib.py"}))
+        dispatch_tool_call(
+            ctx,
+            "read_method",
+            json.dumps({"path": "lib.py", "method_name": "alpha"}),
+        )
+        self.assertEqual(calls["n"], 1)

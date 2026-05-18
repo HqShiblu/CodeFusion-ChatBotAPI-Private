@@ -1,13 +1,3 @@
-"""Thin wrapper around the GitHub REST API.
-
-Only the endpoints the agent actually uses are implemented:
-- recursive git tree
-- contents (file + dir listing)
-- code search
-
-No repository is ever cloned locally — every fetch is an HTTP call.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -33,11 +23,6 @@ class TreeEntry:
 
 
 class GitHubClient:
-    """Owner/repo-scoped client.
-
-    A single instance is created per traversal session; one HTTP session keeps
-    the connection pool warm across all calls.
-    """
 
     def __init__(self, owner: str, repo: str, token: str | None = None) -> None:
         self.owner = owner
@@ -53,7 +38,6 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {actual_token}"
         self._session.headers.update(headers)
 
-    # --- low-level ----------------------------------------------------------
 
     def _get(self, path: str, params: dict | None = None) -> Any:
         url = f"{settings.GITHUB_API_BASE}{path}"
@@ -74,7 +58,6 @@ class GitHubClient:
             )
         return resp.json()
 
-    # --- public API ---------------------------------------------------------
 
     def get_directory_tree(self, ref: str = "HEAD") -> list[TreeEntry]:
         """Return the full recursive tree of the repo at `ref`."""
@@ -93,12 +76,11 @@ class GitHubClient:
         path = path.strip("/")
         data = self._get(f"/repos/{self.owner}/{self.repo}/contents/{path}")
         if isinstance(data, dict):
-            # Path was a file, not a directory.
             return [data]
         return data
 
-    def read_file(self, path: str) -> str:
-        """Return the file content with a leading line-number column."""
+    def read_file_raw(self, path: str) -> str:
+        """Return the file content as plain text (no line-number prefix)."""
         path = path.strip("/")
         data = self._get(f"/repos/{self.owner}/{self.repo}/contents/{path}")
         if isinstance(data, list):
@@ -107,10 +89,13 @@ class GitHubClient:
         if not content_b64:
             return ""
         try:
-            raw = base64.b64decode(content_b64).decode("utf-8", errors="replace")
+            return base64.b64decode(content_b64).decode("utf-8", errors="replace")
         except Exception as exc:
             raise GitHubAPIError(f"Could not decode {path}: {exc}") from exc
-        return _prepend_line_numbers(raw)
+
+    def read_file(self, path: str) -> str:
+        """Return the file content with a leading line-number column."""
+        return _prepend_line_numbers(self.read_file_raw(path))
 
     def get_file_summary(self, path: str, max_lines: int = 80) -> str:
         """Return the first `max_lines` lines of a file (with line numbers)."""
@@ -126,7 +111,6 @@ class GitHubClient:
         try:
             data = self._get("/search/code", params={"q": q, "per_page": max_results})
         except GitHubAPIError as exc:
-            # Search requires authentication; if it fails, return empty.
             logger.warning("search_code failed: %s", exc)
             return []
         results: list[dict] = []

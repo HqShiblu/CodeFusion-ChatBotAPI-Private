@@ -1,6 +1,5 @@
 
-Make SPECS.md file for ai agent to give to cursor.
-Mention the most efficient way to traverse the codebase.
+Generate SPECS.md file for ai agent to give to Cursor.
 
 Things to keep in mind-
 the api endpoint will be
@@ -10,7 +9,8 @@ the api endpoint will be
 	"question":"...................."
 }
 
-Do the following before traversing the code base
+Do the following along with the requirements-
+
 1. Remove trailing slash of repository
 2. Save the edited url, question and the embedding of the question.
 3. Use local model for embedding. The model should be all-MiniLM-L6-v2 and the model name should be taken from .env file.
@@ -19,11 +19,13 @@ Do the following before traversing the code base
 6. If the user is asking for summary first search for readme.MD and relevant files that can be useful depending on the repository type or framework
 7. If none of the above is true then run the actual procedure
 8. First the ai agent should bring the directory tree with github api and then do the rest
-9. After generating the answer the agent should save the answer so that it can be served later semantically
-10. The appliaction should use django, django REST framework and postgresql database
-11. The llm should be OpenAI compatible
-12. Database host, port, username, password, LLM url, LLM name, LLM api key i.e. all the credentials should be read from .env file
-13. Set a variable to run the maximum agent loop so that the agent doesn't run forever. The variable should be read from the .env file
-14. The cmd should show the tool it is calling.
-15. Also print the number of tokens being used in each LLM call. At the end, print total number of tokens used for each api call.
+9. Instead of loading whole code, first send the method names to the llm to analyze based on the dependency. To detect the methods first get the regular expression for that specific programming language. Then analyze that specific method whichever the llm thinks might be useful
+10. After generating the answer the agent should save the answer so that it can be served later semantically
+11. The appliaction should use django, django REST framework and postgresql database
+12. The llm should be OpenAI compatible
+13. Database host, port, username, password, LLM url, LLM name, LLM api key i.e. all the credentials should be read from .env file
+14. Set a variable to run the maximum agent loop so that the agent doesn't run forever. The variable should be read from the .env file
+15. The cmd should show the tool it is calling.
+16. Also print the number of tokens being used in each LLM call. At the end, print total number of tokens used for each api call.
+
 

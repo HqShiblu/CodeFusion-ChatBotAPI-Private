@@ -68,5 +68,4 @@ sessions.
   repositories may cause the HTTP request to time out.
 - The semantic cache threshold (0.92 cosine similarity) is a fixed value. Questions
   that are semantically close but meaningfully different (asking about two different
-  parts of the same system) could theoretically collide, though in practice 0.92 is
-  tight enough to avoid this.
+  parts of the same system) could theoretically collide, though in practice 0.92 is tight enough to avoid this.

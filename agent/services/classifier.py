@@ -79,7 +79,6 @@ def classify_question(question: str) -> Classification:
     matched_themes: list[str] = []
     patterns: list[str] = []
     for theme, keywords, theme_patterns in _THEMES:
-        # Substring match — catches "authentication" via "auth", "endpoints" via "endpoint", etc.
         if any(k in q for k in keywords):
             matched_themes.append(theme)
             patterns.extend(theme_patterns)
@@ -88,7 +87,6 @@ def classify_question(question: str) -> Classification:
         kw in q for kw in ("what does", "what is", "overview", "purpose")
     )
 
-    # de-dupe while preserving order
     seen = set()
     deduped = []
     for p in patterns:

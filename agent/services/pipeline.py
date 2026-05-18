@@ -36,7 +36,11 @@ from agent.services.tools import ToolContext
 logger = logging.getLogger(__name__)
 
 
-# --- Token accumulator for non-agent-loop LLM calls -------------------------
+FAILED_ANSWER_MESSAGE = (
+    "The agent was unable to produce an answer for this question. "
+    "Try rephrasing the question or increase AGENT_MAX_LOOP."
+)
+
 
 
 @dataclass
@@ -51,9 +55,6 @@ class TokenCounter:
         self.total += resp.total_tokens
 
 
-# --- Result type returned to the view ---------------------------------------
-
-
 @dataclass
 class PipelineResult:
     session: ResearchSession
@@ -63,16 +64,10 @@ class PipelineResult:
     token_usage: dict = field(default_factory=dict)
 
 
-# --- Public entry point -----------------------------------------------------
-
-
 def run_pipeline(repository_url: str, question: str) -> PipelineResult:
     parsed = sanitize_repo_url(repository_url)
     session, repo = _create_or_get_session(parsed, question)
     return _execute_pipeline(parsed, session, repo, question)
-
-
-# --- Step 1+2: Sanitize, create repo + session ------------------------------
 
 
 def _create_or_get_session(parsed: ParsedRepo, question: str) -> tuple[ResearchSession, Repository]:
@@ -89,15 +84,8 @@ def _create_or_get_session(parsed: ParsedRepo, question: str) -> tuple[ResearchS
         )
     return session, repo
 
-
-# --- Step 3: Semantic cache lookup ------------------------------------------
-
-
 def _try_cache(session: ResearchSession, repo: Repository) -> ResearchSession | None:
     return find_cached_answer(repo.url, list(session.question_embedding or []))
-
-
-# --- Step 5: LLM self-assessment --------------------------------------------
 
 
 _CONFIDENT_RE = re.compile(r"^\s*confident\b", re.IGNORECASE)
@@ -138,7 +126,6 @@ def _llm_self_assessment(question: str, repo_name: str, counter: TokenCounter) -
     counter.add(resp)
 
     content = (getattr(resp.message, "content", None) or "").strip()
-    # Trim any accidental markdown code fences.
     if content.startswith("```"):
         content = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", content)
     try:
@@ -150,9 +137,6 @@ def _llm_self_assessment(question: str, repo_name: str, counter: TokenCounter) -
     if data.get("confident") is True and data.get("answer"):
         return str(data["answer"]).strip()
     return None
-
-
-# --- Step 6: README / manifest scan -----------------------------------------
 
 
 _MANIFEST_FILES = [
@@ -180,8 +164,6 @@ def _try_readme_scan(
     counter: TokenCounter,
     gh: GitHubClient,
 ) -> str | None:
-    """Only run for summary-style questions. Fetches a small set of meta-files
-    and asks the LLM whether they are sufficient to answer."""
     if not classification.is_summary:
         return None
 
@@ -191,7 +173,6 @@ def _try_readme_scan(
             content = gh.read_file(name)
         except GitHubAPIError:
             continue
-        # Keep each file small in this preflight pass.
         snippet = "\n".join(content.splitlines()[:200])
         collected.append((name, snippet))
         if len(collected) >= 3:
@@ -233,10 +214,6 @@ def _try_readme_scan(
         return str(data["answer"]).strip()
     return None
 
-
-# --- Reference extraction ---------------------------------------------------
-
-
 _REFERENCE_RE = re.compile(
     r"\[\[\s*(?P<path>[^\]\s:]+(?:\s+[^\]\s:]+)*?)\s*(?::(?P<start>\d+)(?:-(?P<end>\d+))?)?\s*\]\]"
 )
@@ -260,8 +237,6 @@ def parse_references(answer: str) -> list[dict]:
     return refs
 
 
-# --- Final orchestration ----------------------------------------------------
-
 
 def _execute_pipeline(
     parsed: ParsedRepo,
@@ -271,7 +246,6 @@ def _execute_pipeline(
 ) -> PipelineResult:
     counter = TokenCounter()
 
-    # Step 3 — semantic cache
     cached = _try_cache(session, repo)
     if cached is not None and cached.answer:
         return _finalize(
@@ -283,7 +257,6 @@ def _execute_pipeline(
             extra_refs=cached.token_usage and [],
         )
 
-    # Step 5 — LLM self-assessment
     knowledge_answer = _llm_self_assessment(question, parsed.name, counter)
     if knowledge_answer:
         return _finalize(
@@ -294,10 +267,8 @@ def _execute_pipeline(
             counter=counter,
         )
 
-    # Build GitHub client now — it's shared by README scan and the agent loop.
     gh = GitHubClient(parsed.owner, parsed.repo)
 
-    # Step 6 — README/manifest scan for summary-style questions
     classification = classify_question(question)
     readme_answer = _try_readme_scan(parsed, question, classification, counter, gh)
     if readme_answer:
@@ -309,7 +280,6 @@ def _execute_pipeline(
             counter=counter,
         )
 
-    # Step 7 — full tool-calling traversal
     ctx = ToolContext(
         session=session,
         repository=repo,
@@ -322,12 +292,15 @@ def _execute_pipeline(
     counter.completion += result.completion_tokens
     counter.total += result.total_tokens
 
+    agent_answer = (result.answer or "").strip()
+    is_failure = not agent_answer
     return _finalize(
         session=session,
         repo=repo,
-        answer=result.answer or "(agent did not produce an answer)",
+        answer=agent_answer or FAILED_ANSWER_MESSAGE,
         source=ResearchSession.SOURCE_FULL_TRAVERSAL,
         counter=counter,
+        is_failure=is_failure,
     )
 
 
@@ -338,6 +311,7 @@ def _finalize(
     source: str,
     counter: TokenCounter,
     extra_refs: list[dict] | None = None,
+    is_failure: bool = False,
 ) -> PipelineResult:
     now = datetime.now(timezone.utc)
     token_usage = {
@@ -346,7 +320,7 @@ def _finalize(
         "total_tokens": counter.total,
     }
 
-    session.answer = answer
+    session.answer = None if is_failure else answer
     session.source = source
     session.token_usage = token_usage
     session.completed_at = now
@@ -356,7 +330,6 @@ def _finalize(
     repo.save(update_fields=["last_analyzed_at"])
 
     references = parse_references(answer)
-    # Enrich references with notes from saved findings on this session.
     findings = {(f.file_path, f.line_start, f.line_end): f.note for f in session.findings.all()}
     for ref in references:
         key = (ref["file_path"], ref["line_start"], ref["line_end"])

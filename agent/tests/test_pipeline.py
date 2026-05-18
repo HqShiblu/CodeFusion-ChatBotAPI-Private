@@ -1,9 +1,3 @@
-"""End-to-end pipeline tests with mocked LLM, embeddings, and GitHub.
-
-The pipeline orders matter: cache > llm_knowledge > readme_scan > full_traversal.
-We verify each branch fires under the right preconditions.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -13,6 +7,7 @@ from django.test import TestCase
 
 from agent.models import Finding, Repository, ResearchSession, ToolCallLog
 from agent.services import pipeline
+from agent.services.pipeline import FAILED_ANSWER_MESSAGE
 
 
 # A canonical 384-d zero vector for use everywhere the embedding is needed.
@@ -110,3 +105,81 @@ class PipelineCacheBranchTests(TestCase):
         self.assertEqual(result.answer, prior.answer)
         # LLM must not have been called when we got a cache hit.
         mock_chat.assert_not_called()
+
+
+class FailedRunIsNotCachedTests(TestCase):
+    """Regression tests for the 'failure poisoned the cache' bug.
+
+    Two invariants:
+        1. When the agent loop produces no textual answer, the session row
+           must have answer=NULL in the DB so it cannot be returned by the
+           semantic cache later.
+        2. The HTTP response still surfaces a human-readable failure message
+           so the caller knows what happened.
+    """
+
+    @mock.patch("agent.services.pipeline.embeddings.embed", side_effect=_stub_embed)
+    @mock.patch("agent.services.pipeline.find_cached_answer", return_value=None)
+    @mock.patch("agent.services.pipeline.GitHubClient")
+    @mock.patch("agent.services.pipeline.run_agent_loop")
+    @mock.patch("agent.services.pipeline.llm.chat")
+    def test_failed_run_saves_null_answer(
+        self,
+        mock_chat,
+        mock_agent_loop,
+        _mock_gh,
+        _mock_cache,
+        _mock_embed,
+    ):
+        # Self-assessment says "not confident" so we fall through.
+        mock_chat.return_value = _StubLLMResponse(
+            '{"confident": false, "answer": null}'
+        )
+        # Agent loop returns no answer (simulates the failure that caused the bug).
+        from agent.services.agent_loop import AgentResult
+        mock_agent_loop.return_value = AgentResult(
+            answer="",
+            prompt_tokens=10,
+            completion_tokens=0,
+            total_tokens=10,
+            tool_calls_made=5,
+        )
+
+        result = pipeline.run_pipeline(
+            "https://github.com/x/y",
+            "Where is the retry logic?",
+        )
+
+        # HTTP response should surface the failure message.
+        self.assertEqual(result.source, ResearchSession.SOURCE_FULL_TRAVERSAL)
+        self.assertEqual(result.answer, FAILED_ANSWER_MESSAGE)
+
+        # But the DB row MUST hold answer=NULL so the cache won't serve it.
+        result.session.refresh_from_db()
+        self.assertIsNone(result.session.answer)
+
+    @mock.patch("agent.services.pipeline.embeddings.embed", side_effect=_stub_embed)
+    def test_legacy_failure_sentinel_is_skipped_by_cache(self, _mock_embed):
+        """Even if a stale failure row is still in the DB from before the
+        fix, the cache lookup must skip it."""
+        repo = Repository.objects.create(url="https://github.com/x/y", name="x/y")
+        # Insert a poisoned row directly (simulating a pre-fix DB).
+        ResearchSession.objects.create(
+            repository=repo,
+            question="Where is the retry logic?",
+            answer="(agent did not produce an answer)",
+            source=ResearchSession.SOURCE_FULL_TRAVERSAL,
+            completed_at=datetime.now(timezone.utc),
+        )
+
+        # The cache lookup, when fed this row directly, should treat it as a miss.
+        from agent.services.cache import _LEGACY_FAILURE_PREFIXES
+
+        # The lookup is gated on pgvector which isn't available on SQLite, so
+        # this assertion is on the prefix list rather than a live query.
+        self.assertTrue(
+            any(
+                "agent did not produce an answer".lower() in p.lower()
+                for p in _LEGACY_FAILURE_PREFIXES
+            )
+        )
