@@ -4,21 +4,37 @@
 ## Design Decisions
 
 **1.** Remove trailing slash of repository.
+
 **2.** Save the edited url, question and the embedding of the question.
+
 **3.** Use local model for embedding. The model should be all-MiniLM-L6-v2 and the model name should be taken from .env file.
+
 **4.** First, search with embedding if the question has already been asked and answered.
+
 **5.** If the question is already known to the LLM then answer from it's own knowledge base.
+
 **6.** If the user is asking for summary first search for readme.MD and relevant files that can be useful depending on the repository type or framework.
+
 **7.** If none of the above is true then run the actual procedure.
+
 **8.** First the ai agent should bring the directory tree with github api and then do the rest.
+
 **9.** Instead of loading whole code, first send the method names to the llm to analyze based on the dependency. To detect the methods first get the regular expression for that specific programming language. Then analyze that specific method whichever the llm thinks might be useful.
+
 **10.** After generating the answer the agent should save the answer so that it can be served later semantically.
+
 **11.** The appliaction should use django, django REST framework and Postgresql database.
+
 **12.** The LLM should be OpenAI compatible.
+
 **13.** Database host, port, username, password, LLM url, LLM name, LLM api key i.e. all the credentials should be read from .env file.
+
 **14.** Set a variable to run the maximum agent loop so that the agent doesn't run forever. The variable should be read from the .env file.
+
 **15.** The cmd should show the tool it is calling and files that are being read.
+
 **16.** Also print the number of tokens being used in each LLM call. At the end, print total number of tokens used for each api call.
+
 **17.** There should be four models- Repository, ResearchSession, Finding, ToolCallLog.
 Repository tracks repositories that are being searched. There is one row per repository, url is unique.
 ResearchSession holds the question, its embedding, the final answer, source category, completion timestamps, and token usage. Each new question creates a new session row linked to it's Repository via a foreign key repository_id.
