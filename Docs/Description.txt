@@ -1,0 +1,29 @@
+
+Make SPECS.md file for ai agent to give to cursor.
+Mention the most efficient way to traverse the codebase.
+
+Things to keep in mind-
+the api endpoint will be
+
+{
+	"repository_url":"https://github.com.......",
+	"question":"...................."
+}
+
+Do the following before traversing the code base
+1. Remove trailing slash of repository
+2. Save the edited url, question and the embedding of the question.
+3. Use local model for embedding. The model should be all-MiniLM-L6-v2 and the model name should be taken from .env file.
+4. First, search with embedding if the question has already been asked and answered
+5. If the question is already known to the LLM then answer from it's own knowledge base
+6. If the user is asking for summary first search for readme.MD and relevant files that can be useful depending on the repository type or framework
+7. If none of the above is true then run the actual procedure
+8. First the ai agent should bring the directory tree with github api and then do the rest
+9. After generating the answer the agent should save the answer so that it can be served later semantically
+10. The appliaction should use django, django REST framework and postgresql database
+11. The llm should be OpenAI compatible
+12. Database host, port, username, password, LLM url, LLM name, LLM api key i.e. all the credentials should be read from .env file
+13. Set a variable to run the maximum agent loop so that the agent doesn't run forever. The variable should be read from the .env file
+14. The cmd should show the tool it is calling.
+15. Also print the number of tokens being used in each LLM call. At the end, print total number of tokens used for each api call.
+

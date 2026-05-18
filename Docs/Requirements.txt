@@ -1,0 +1,99 @@
+
+Build a small but complete AI agent that solves a real backend problem. This task is
+designed to take roughly a weekend (approximately 8-12 hours of focused work). We're
+more interested in your design decisions, code quality, and judgment than in scope or
+polish, please don't over-invest your time.
+You will have 5 days from receiving this document to submit your application together with
+the completed task.
+The Task: Build a Codebase Research Agent
+Build an AI agent that can answer technical questions about a given GitHub repository by
+exploring the code itself.
+Functional Requirements
+The agent should accept:
+* A public GitHub repository URL (or local path)
+* A natural language question about the codebase
+And produce:
+* A clear, accurate answer
+* References to specific files, functions, or line numbers it used to form the answer
+Every research session must be persisted to the database so it can be retrieved, reviewed,
+and built upon later. The agent itself should be able to read from and write to the database
+as part of its workflow.
+Example Inputs and Expected Behavior
+Input: https://github.com/tiangolo/fastapi - "How does FastAPI handle dependency
+injection internally?"
+Expected: The agent explores relevant files, identifies the dependency injection mechanism,
+and explains it with references to specific files and code locations.
+Input: https://github.com/celery/celery - "Where is task retry logic implemented, and
+what backoff strategies are supported?"
+Expected: A focused answer pointing to the relevant module(s), with a brief explanation of
+retry behavior.
+Technical Requirements
+* Language: Python
+* Framework: Django (required)
+Database: PostgreSQL (preferred) or SQLite for simplicity. Use Django ORM, no raw SQL
+unless justified.
+* LLM: Your choice (Claude, GPT-4, open-source, whatever you prefer). Document why
+you chose it.
+* Agent design: The agent must use tool calling / function calling to explore the
+repository AND interact with the database. Examples:
+Code exploration tools: list_files(path), read_file(path), search_code(query),
+get_file_summary(path)
+Database tools: save_finding(session_id, file_path, note),
+get_previous_findings(repo_url), list_past_sessions(repo_url)
+* Multi-step reasoning: The agent should be capable of making multiple tool calls before
+producing a final answer
+* Interface: A REST API (Django views or Django REST Framework). No CLI, no frontend
+needed. At minimum, expose endpoints to start a research session, retrieve results, and
+list past sessions for a repo.
+Database Requirements
+Design and implement a schema that supports the agent's workflow. At minimum, you
+should model:
+* Repository: repos that have been researched (URL, name, last analyzed timestamp,
+etc.)
+* ResearchSession: each question asked against a repo (question text, final answer,
+timestamps, token usage if you track it)
+* Finding / ToolCall log: what the agent looked at and what it concluded along the way
+You're free to design the schema as you see fit, we want to see your modeling choices. Use
+Django migrations.
+The agent should:
+* Write to the database during a research session (logging what it found, what tools it
+called, the final answer)
+* Read from the database when relevant, for example, if the same repo was researched
+before, the agent should be able to check prior findings before re-exploring from scratch
+* Be invokable in a way that creates a new record and links related findings to it
+We expect to see at least a few sample records created by actually running the agent,
+include a fixture, seed script, or instructions for generating sample data.
+What We're NOT Looking For
+* Production-grade error handling on every edge case
+* A polished UI
+* Authentication, multi-user support, or scaling
+* Comprehensive test coverage (a few key tests are enough)
+Agent design decisions: How did you structure the tool set? When does the agent stop?
+How do you prevent infinite loops?
+* Database design: Is your schema sensible, normalized where it should be,
+denormalized where it makes sense?
+* Agent-DB interaction: Does the agent meaningfully use the database, or is persistence
+just an afterthought tacked on?
+* Context management: How do you handle large codebases that exceed the context
+window?
+* Cost and latency awareness: Did you think about token usage and number of LLM
+calls?
+* Code quality: Clean, readable, well-organized Python and Django code
+* Judgment: What did you choose to build well vs. leave rough? Why?
+Deliverables
+Submit all three of the following:
+1. GitHub Repository
+* Public repository
+* Clear README.md with setup and run instructions
+* Working code that runs from a clean clone with documented steps
+* Include a sample .env.example for any API keys required (do NOT commit real keys)
+2. Written Explanation (DECISIONS.md in the repo)
+A short document (target: 500-800 words) covering:
+* Architecture overview, how the agent is structured
+* Database schema rationale: why you modeled it this way, what trade-offs you
+considered, what you'd change at scale
+* Key design decisions and trade-offs you made
+* What you'd do differently with more time
+* How you used AI coding tools (Claude Code, Cursor, Copilot, etc.) during this task, what
+worked, what didn't, what you did manually
+* Any limitations or known issues
