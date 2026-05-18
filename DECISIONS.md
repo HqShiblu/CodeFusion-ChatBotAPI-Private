@@ -1,20 +1,5 @@
 
-# DECISIONS.md — Codebase Research Agent
-
-## Architecture Overview
-
-The agent is a Django REST Framework application backed by PostgreSQL. A single
-`POST /api/sessions/` endpoint accepts a GitHub repository URL and a natural language
-question, runs a structured pipeline before touching the codebase and returns a precise
-answer with references to specific files and line numbers. Every session — including
-every tool call the agent makes — is persisted to the database so it can be retrieved
-and built upon later.
-
-The agent itself is implemented as a tool-calling loop: the LLM is given a set of
-tools (GitHub exploration tools + database read/write tools) and iterates until it
-has enough context to answer confidently, or until the hard loop cap is hit.
-
----
+# DECISIONS.md
 
 ## Design Decisions
 
