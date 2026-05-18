@@ -80,3 +80,4 @@ def message_to_dict(message: Any) -> dict:
             for tc in tool_calls
         ]
     return out
+

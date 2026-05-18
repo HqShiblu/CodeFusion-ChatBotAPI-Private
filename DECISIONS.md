@@ -13,7 +13,7 @@
 
 **5.** If the question is already known to the LLM then answer from it's own knowledge base.
 
-**6.** If the user is asking for summary first search for readme.MD and relevant files that can be useful depending on the repository type or framework.
+**6.** If the user is asking for summary first search for README.md and relevant files that can be useful depending on the repository type or framework.
 
 **7.** If none of the above is true then run the actual procedure.
 

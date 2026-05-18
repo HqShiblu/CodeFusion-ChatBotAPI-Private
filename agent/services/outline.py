@@ -57,12 +57,6 @@ def detect_language(path: str) -> str | None:
     return _EXT_TO_LANG.get(suffix)
 
 
-# --- Patterns: each captures a `name` group on the signature line ------------
-#
-# These are deliberately permissive — they err on the side of finding too many
-# signatures rather than missing real ones. The LLM is robust to noise but
-# can't recover from a missed method.
-
 _PYTHON_PATTERNS = [
     re.compile(r"^(?P<indent>[ \t]*)(?:async\s+)?def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("),
     re.compile(r"^(?P<indent>[ \t]*)class\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[\(:]"),

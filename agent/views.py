@@ -61,7 +61,7 @@ def _classify_pipeline_error(exc: Exception) -> tuple[int, str]:
 
 
 @api_view(["GET", "POST"])
-def sessions_list_create(request):
+def create_session_list(request):
     if request.method == "POST":
         serializer = CreateSessionRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

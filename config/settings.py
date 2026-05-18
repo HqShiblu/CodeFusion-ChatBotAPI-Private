@@ -16,14 +16,10 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# --- Core ---------------------------------------------------------------------
-
 SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-dev-only-change-me")
 DEBUG = os.getenv("DEBUG", "True").lower() in {"1", "true", "yes"}
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "*").split(",") if h.strip()]
 
-
-# --- Applications -------------------------------------------------------------
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
@@ -57,11 +53,6 @@ TEMPLATES = [
 ]
 
 
-# --- Database -----------------------------------------------------------------
-# Default to PostgreSQL via env vars. For local tests, set USE_SQLITE=1 to fall
-# back to an in-memory SQLite (vector field stored as text — only valid for tests
-# that don't exercise the semantic cache).
-
 if os.getenv("USE_SQLITE", "").lower() in {"1", "true", "yes"}:
     DATABASES = {
         "default": {
@@ -82,7 +73,6 @@ else:
     }
 
 
-# --- DRF ----------------------------------------------------------------------
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
@@ -94,8 +84,6 @@ REST_FRAMEWORK = {
 }
 
 
-# --- I18N / static ------------------------------------------------------------
-
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
@@ -105,34 +93,22 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-# --- LLM ---------------------------------------------------------------------
-
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gpt-4o")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
-
-# --- Embeddings (local sentence-transformers) --------------------------------
-
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
-# all-MiniLM-L6-v2 produces 384-dim vectors. Keep this in sync with the model.
+
 EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "384"))
 
-
-# --- GitHub -------------------------------------------------------------------
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_API_BASE = "https://api.github.com"
 
 
-# --- Agent guardrails ---------------------------------------------------------
-
 AGENT_MAX_LOOP = int(os.getenv("AGENT_MAX_LOOP", "30"))
 AGENT_MAX_FILE_READS = int(os.getenv("AGENT_MAX_FILE_READS", "15"))
 SEMANTIC_CACHE_THRESHOLD = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.92"))
-
-
-# --- Logging ------------------------------------------------------------------
 
 LOGGING = {
     "version": 1,
