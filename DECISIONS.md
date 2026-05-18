@@ -36,10 +36,14 @@
 **16.** Also print the number of tokens being used in each LLM call. At the end, print total number of tokens used for each api call.
 
 **17.** There should be four models- Repository, ResearchSession, Finding, ToolCallLog.
-Repository tracks repositories that are being searched. There is one row per repository, url is unique.
-ResearchSession holds the question, its embedding, the final answer, source category, completion timestamps, and token usage. Each new question creates a new session row linked to it's Repository via a foreign key repository_id.
-ToolCallLog logs which tool ran, its inputs, and a truncated summary of the output, the database stores this under a foreign key to ResearchSession with session_id. One ResearchSession can have multiple ToolCallLog rows.
-Finding keeps the track when the agent concluded something meaningful about a particular file. One ResearchSession may have many Finding rows over the lifetime of one question.
+
+**Repository** tracks repositories that are being searched. There is one row per repository, url is unique.
+
+**ResearchSession** holds the question, its embedding, the final answer, source category, completion timestamps, and token usage. Each new question creates a new session row linked to it's Repository via a foreign key repository_id.
+
+**ToolCallLog** logs which tool ran, its inputs, and a truncated summary of the output, the database stores this under a foreign key to ResearchSession with session_id. One ResearchSession can have multiple ToolCallLog rows.
+
+**Finding** keeps the track when the agent concluded something meaningful about a particular file. One ResearchSession may have many Finding rows over the lifetime of one question.
 
 ## Database Schema Rationale
 
