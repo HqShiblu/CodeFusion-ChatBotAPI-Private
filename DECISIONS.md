@@ -19,31 +19,18 @@
 14. Set a variable to run the maximum agent loop so that the agent doesn't run forever. The variable should be read from the .env file.
 15. The cmd should show the tool it is calling and files that are being read.
 16. Also print the number of tokens being used in each LLM call. At the end, print total number of tokens used for each api call.
-
+17. There should be four models- Repository, ResearchSession, Finding, ToolCallLog.
+Repository tracks repositories that are being searched. There is one row per repository, url is unique.
+ResearchSession holds the question, its embedding, the final answer, source category, completion timestamps, and token usage. Each new question creates a new session row linked to it's Repository via a foreign key repository_id.
+ToolCallLog logs which tool ran, its inputs, and a truncated summary of the output, the database stores this under a foreign key to ResearchSession with session_id. One ResearchSession can have multiple ToolCallLog rows.
+Finding keeps the track when the agent concluded something meaningful about a particular file. One ResearchSession may have many Finding rows over the lifetime of one question.
 
 ## Database Schema Rationale
-
-Four models: `Repository`, `ResearchSession`, `Finding`, `ToolCallLog`.
-
-`Repository` keeps the tracks of the repository that are being searched.
-It keeps single entry for each repository.
-
-`ResearchSession` holds the question, its embedding, the final answer and token usage. Each time a question is asked it creates a new session and saves it with a reference of `Repository`.
-
-`ToolCallLog` is written automatically by the tool dispatcher after every invocation.
-It keeps track of tools that are being called. It has *session_id* as a foreign key and a `ResearchSession` may have many `ToolCallLog`.
-
-`Finding` is written by the agent mid-loop via the `save_finding` tool. These are
-the agent's working notes — each one records what it concluded about a specific file
-during this session. They also feed `get_previous_findings()` in future sessions,
-letting the agent skip files it has already characterized.
-A `ResearchSession` can have only one `Finding`.
 
 **At scale:** The `question_embedding` vector index (`ivfflat`, cosine ops) will need
 tuning as the table grows. The `Finding` and `ToolCallLog` tables will grow fast on
 active systems and would benefit from partitioning by `session_id` or archiving old
 sessions.
-
 
 ## What I Would Do Differently With More Time
 
